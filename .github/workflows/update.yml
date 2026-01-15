@@ -1,0 +1,93 @@
+name: Update Swift Package
+
+on:
+  workflow_call:
+    inputs:
+      url:
+        required: false
+        type: string
+        description: Optional url to dependency; if omitted the previous url will be used
+      version:
+        required: true
+        type: string
+        description: New version; cannot be lower than the previous version
+  workflow_dispatch:
+    inputs:
+      url:
+        required: false
+        type: string
+        description: Optional url to dependency; if omitted the previous url will be used
+      version:
+        required: true
+        type: string
+        description: New version; cannot be lower than the previous version
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Parse Existing Binary Target URL
+        id: existing
+        run: |
+          echo url=`awk '
+            /url:/ {
+              gsub(/^[^"]*"|",?/, "", $0);
+              gsub(/",$|,$/, "", $0);
+              print $0;
+              exit
+            }
+          ' "Package.swift"` >> $GITHUB_OUTPUT
+      - name: Update URL to new version
+        id: update
+        run: >-
+          echo url=`echo "${{ inputs.url && inputs.url || steps.existing.outputs.url }}" | 
+          sed -E "s/\b[0-9]+\.[0-9]+([.][0-9]+)?\b/${{ inputs.version }}/g"` >> $GITHUB_OUTPUT
+      - name: Download updated binary and compute checksum
+        id: binary
+        run: |
+          curl --fail "${{ steps.update.outputs.url }}" > framework.zip
+          echo checksum=`swift package compute-checksum framework.zip` >> $GITHUB_OUTPUT
+      - name: Update Package
+        run: |
+          TMP_FILE=$(mktemp)
+          sed -E \
+            "/^[[:space:]]*\\.binaryTarget\\(/,/^[[:space:]]*[)]+/ {
+              /[[:space:]]*url:[[:space:]]*\"([^\"]+)\"/ {
+                s|^([[:space:]]*url:[[:space:]]*)\"[^\"]+\"|\\1\"${{ steps.update.outputs.url }}\"|
+              }
+              /[[:space:]]*checksum:[[:space:]]*\"([^\"]+)\"/ {
+                s|^([[:space:]]*checksum:[[:space:]]*)\"[^\"]+\"|\\1\"${{ steps.binary.outputs.checksum }}\"|
+              }
+            }" Package.swift > "$TMP_FILE"
+          mv "$TMP_FILE" Package.swift
+      - name: Validate Package
+        run: |
+          swift package reset
+          swift package resolve
+      - name: Commit Changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "Updated to version ${{ inputs.version }}"
+          git push
+      - name: Create Release
+        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create ${{ inputs.version }} --repo ${{ github.repository }} -t ${{ inputs.version }} --fail-on-no-commits
