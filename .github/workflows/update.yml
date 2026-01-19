@@ -60,7 +60,7 @@ jobs:
       - name: Download updated binary and compute checksum
         id: binary
         run: |
-          curl --fail "${{ steps.update.outputs.url }}" > framework.zip
+          curl --fail -L "${{ steps.update.outputs.url }}" > framework.zip
           echo checksum=`swift package compute-checksum framework.zip` >> $GITHUB_OUTPUT
       - name: Update Package
         run: |
